@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+#
+# gt — an interactive theme picker for the Ghostty terminal.
+#
+#   gt              open the picker: ↑↓ previews live, ←→ pages, Enter applies, Esc reverts
+#   gt <theme>      switch straight to a theme by name
+#   gt -l           print the current theme
+#   gt -h           show this help
+#
+# Two things make it different from editing the config by hand:
+#
+#   1. Previewing is instant. Colors are pushed to the terminal with OSC escape
+#      sequences, so you see a theme on your real screen — your prompt, your
+#      scrollback, your code — without reloading anything.
+#   2. Applying hits every window. On Enter the theme is written to the config
+#      (for new windows) AND pushed to every tty owned by Ghostty, so windows
+#      and tabs you already have open change too.
+#
+# Themes are listed brightest background first, which is the useful order if you
+# are picking a theme to fight glare on a glossy screen.
+#
+# Requires: bash 3.2+, fzf, Ghostty. MIT licensed.
+
+set -uo pipefail
+shopt -s nullglob
+
+# ---------------------------------------------------------------- locations --
+
+# Where Ghostty keeps its bundled themes. First match wins; a user theme
+# directory is searched before the bundled one so your own themes override.
+theme_dirs() {
+  local d
+  if [ -n "${GHOSTTY_THEMES_DIR:-}" ]; then
+    printf '%s\n' "$GHOSTTY_THEMES_DIR"
+    return
+  fi
+  for d in \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/themes" \
+    "$HOME/Library/Application Support/com.mitchellh.ghostty/themes" \
+    "/Applications/Ghostty.app/Contents/Resources/ghostty/themes" \
+    "$HOME/Applications/Ghostty.app/Contents/Resources/ghostty/themes" \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/ghostty/themes" \
+    "/usr/share/ghostty/themes" \
+    "/usr/local/share/ghostty/themes" \
+    "/opt/homebrew/share/ghostty/themes"
+  do
+    [ -d "$d" ] && printf '%s\n' "$d"
+  done
+}
+
+config_path() {
+  local d
+  if [ -n "${GHOSTTY_CONFIG:-}" ]; then printf '%s\n' "$GHOSTTY_CONFIG"; return; fi
+  for d in \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/config" \
+    "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+  do
+    [ -f "$d" ] && { printf '%s\n' "$d"; return; }
+  done
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/config"
+}
+
+theme_file() {
+  local d
+  while IFS= read -r d; do
+    [ -f "$d/$1" ] && { printf '%s\n' "$d/$1"; return 0; }
+  done < <(theme_dirs)
+  return 1
+}
+
+CONFIG="$(config_path)"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+[ -n "$(theme_dirs)" ] || {
+  echo "No Ghostty theme directory found. Set GHOSTTY_THEMES_DIR to point at one." >&2
+  exit 1
+}
+
+# ----------------------------------------------------------------- messages --
+
+case "${GT_LANG:-${LC_ALL:-${LANG:-en}}}" in zh*) L=zh ;; *) L=en ;; esac
+
+msg() {
+  if [ "$L" = zh ]; then
+    case "$1" in
+      header)   echo '↑↓ 逐个预览 · ←→ 翻页 · ^T 最亮 ^B 最暗 · 打字筛名字 · Enter 应用到所有窗口 · Esc 还原' ;;
+      prompt)   echo '主题 > ' ;;
+      lum)      echo '亮度' ;;
+      applied)  echo "已切到 $2（所有 Ghostty 窗口已刷新，新窗口也用它）" ;;
+      reverted) echo "已取消，还原为 ${2:-终端默认配色}" ;;
+      nosuch)   echo "没有这个主题：$2" ;;
+      similar)  echo '名字接近的：' ;;
+      needfzf)  echo '需要先装 fzf：brew install fzf' ;;
+    esac
+  else
+    case "$1" in
+      header)   echo '↑↓ preview · ←→ page · ^T brightest ^B darkest · type to filter · Enter apply everywhere · Esc revert' ;;
+      prompt)   echo 'theme > ' ;;
+      lum)      echo 'lum' ;;
+      applied)  echo "Applied $2 (all Ghostty windows refreshed; new ones will use it too)" ;;
+      reverted) echo "Cancelled, reverted to ${2:-terminal defaults}" ;;
+      nosuch)   echo "No such theme: $2" ;;
+      similar)  echo 'Close matches:' ;;
+      needfzf)  echo 'fzf is required: brew install fzf' ;;
+    esac
+  fi
+}
+
+# -------------------------------------------------------------------- colors --
+
+current_theme() {
+  [ -f "$CONFIG" ] || return 0
+  grep -m1 '^[[:space:]]*theme[[:space:]]*=' "$CONFIG" 2>/dev/null | sed 's/^[^=]*=[[:space:]]*//'
+}
+
+# Turn a theme file into the escape sequences that recolor a terminal.
+# OSC 4 = palette entry, 10 = foreground, 11 = background, 12 = cursor,
+# 17/19 = selection. Emitted to stdout; the caller decides where they go.
+build_osc() {
+  local f line k v out=''
+  if ! f="$(theme_file "$1")"; then
+    # Unknown/empty theme: reset the terminal to its own defaults.
+    printf '\e]104\a\e]110\a\e]111\a\e]112\a'
+    return
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    k="${line%%=*}"; k="${k// /}"
+    v="${line#*=}";  v="${v// /}"
+    case "$k" in
+      palette)              out+=$'\e]4;'"${v%%=*};${v#*=}"$'\a' ;;
+      background)           out+=$'\e]11;'"$v"$'\a' ;;
+      foreground)           out+=$'\e]10;'"$v"$'\a' ;;
+      cursor-color)         out+=$'\e]12;'"$v"$'\a' ;;
+      selection-background) out+=$'\e]17;'"$v"$'\a' ;;
+      selection-foreground) out+=$'\e]19;'"$v"$'\a' ;;
+    esac
+  done < "$f"
+  printf '%s' "$out"
+}
+
+# Every tty that belongs to Ghostty. Walk each process up to its ancestors:
+# reaching the Ghostty app process means that tty is a Ghostty window.
+# Ttys under tmux are skipped — there the "terminal" is tmux, not Ghostty, so
+# writing color commands to them does nothing useful and can confuse tmux.
+ghostty_ttys() {
+  ps -eo pid=,ppid=,tty=,comm= 2>/dev/null | awk '
+    {
+      P[$1] = $2; T[$1] = $3; C[$1] = $4
+      if ($4 ~ /Ghostty\.app\/Contents\/MacOS\/ghostty$/ || $4 == "ghostty" || $4 == "ghostty-bin")
+        isapp[$1] = 1
+    }
+    END {
+      for (p in P) {
+        if (T[p] == "??" || T[p] == "" || T[p] == "-" || T[p] == "?") continue
+        q = p; ok = 0; d = 0
+        while ((q in P) && d++ < 64) {
+          if (C[q] ~ /tmux/) { ok = 0; break }
+          if (isapp[P[q]]) { ok = 1; break }
+          q = P[q]
+        }
+        if (ok) seen[T[p]] = 1
+      }
+      for (t in seen) print t
+    }'
+}
+
+# Current window only — used while arrowing through the list, where it has to
+# be cheap enough to fire on every keypress.
+apply() { { build_osc "$1" > /dev/tty; } 2>/dev/null; }
+
+# Current window plus every other Ghostty window and tab.
+apply_all() {
+  local osc t
+  osc="$(build_osc "$1")"
+  { printf '%s' "$osc" > /dev/tty; } 2>/dev/null
+  for t in $(ghostty_ttys); do
+    [ -w "/dev/$t" ] || continue
+    { printf '%s' "$osc" > "/dev/$t"; } 2>/dev/null
+  done
+}
+
+# Rewrite (or add) the theme line in the config so new windows use it too.
+# Done with awk + mv rather than `sed -i`, whose syntax differs between BSD/GNU.
+persist() {
+  local tmp
+  [ -f "$CONFIG" ] || { mkdir -p "$(dirname "$CONFIG")"; : > "$CONFIG"; }
+  tmp="$CONFIG.gt.$$"
+  awk -v t="$1" '
+    /^[ \t]*theme[ \t]*=/ && !done { print "theme = " t; done = 1; next }
+    { print }
+    END { if (!done) print "theme = " t }
+  ' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
+}
+
+# One awk pass over every theme file: pull out background/foreground, sort by
+# background brightness, and render a swatch in each theme's own colors.
+# (Doing this with a couple of greps per file costs ~3s for 460+ themes.)
+list() {
+  local d files=()
+  while IFS= read -r d; do files+=("$d"/*); done < <(theme_dirs)
+  [ ${#files[@]} -gt 0 ] || return 0
+  awk -v lumlabel="$(msg lum)" '
+    function hex(s,   i, c, n, v) {
+      n = 0
+      for (i = 1; i <= length(s); i++) {
+        c = tolower(substr(s, i, 1))
+        v = index("0123456789abcdef", c) - 1
+        if (v < 0) return -1
+        n = n * 16 + v
+      }
+      return n
+    }
+    function base(p) { sub(/.*\//, "", p); return p }
+    # A theme name found in an earlier directory wins; ignore later duplicates.
+    FNR == 1 { nm = base(FILENAME); if (nm in taken) skip[FILENAME] = 1; else taken[nm] = 1 }
+    FILENAME in skip { next }
+    /^[ \t]*background[ \t]*=/ { v = $2; gsub(/[ \t#]/, "", v); bg[FILENAME] = v; next }
+    /^[ \t]*foreground[ \t]*=/ { v = $2; gsub(/[ \t#]/, "", v); fg[FILENAME] = v; next }
+    END {
+      for (f in bg) {
+        b = bg[f]; g = (f in fg) ? fg[f] : "000000"
+        if (length(b) != 6 || length(g) != 6) continue
+        br = hex(substr(b,1,2)); bgn = hex(substr(b,3,2)); bb = hex(substr(b,5,2))
+        fr = hex(substr(g,1,2)); fgn = hex(substr(g,3,2)); fb = hex(substr(g,5,2))
+        if (br < 0 || bgn < 0 || bb < 0 || fr < 0 || fgn < 0 || fb < 0) continue
+        lum = int((br * 299 + bgn * 587 + bb * 114) / 1000)
+        printf "%03d\t\033[48;2;%d;%d;%dm\033[38;2;%d;%d;%dm  Aa %s%4d  \033[0m\t%s\n",
+               lum, br, bgn, bb, fr, fgn, fb, lumlabel, lum, base(f)
+      }
+    }
+  ' FS='=' "${files[@]}" | sort -t"$(printf '\t')" -k1,1nr -k3,3f | cut -f2-
+}
+
+# ----------------------------------------------------------------- dispatch --
+
+case "${1-}" in
+  --apply)   apply "${2-}"; exit 0 ;;   # internal: called by fzf on each focus change
+  -l|--list) current_theme; exit 0 ;;
+  -h|--help) sed -n '3,8p' "$SELF" | sed 's/^#[[:space:]]\{0,1\}//'; exit 0 ;;
+  '') ;;
+  *) if ! theme_file "$*" >/dev/null; then
+       msg nosuch "$*" >&2
+       msg similar >&2
+       theme_dirs | while IFS= read -r d; do ls "$d"; done | grep -i -- "$1" | sort -u | head -5 >&2
+       exit 1
+     fi
+     persist "$*"; apply_all "$*"; echo "→ $*"; exit 0 ;;
+esac
+
+command -v fzf >/dev/null || { msg needfzf >&2; exit 1; }
+
+ORIG="$(current_theme)"
+LIST="$(list)"
+[ -n "$LIST" ] || { echo "No themes found." >&2; exit 1; }
+
+# Open with the cursor already on the theme in use, so you can compare outward
+# from where you are.
+POS="$(printf '%s\n' "$LIST" | grep -n -F -- "$(printf '\t')${ORIG}" | head -1 | cut -d: -f1)"
+[ -n "$POS" ] || POS=1
+
+SEL="$(printf '%s\n' "$LIST" | fzf --ansi --delimiter="$(printf '\t')" --with-nth=1,2 \
+        --height=100% --reverse --no-mouse --sync --cycle \
+        --prompt="$(msg prompt)" \
+        --header="$(msg header)" \
+        --bind='left:page-up,right:page-down' \
+        --bind='ctrl-d:half-page-down,ctrl-u:half-page-up' \
+        --bind='ctrl-t:first,ctrl-b:last' \
+        --bind="start:pos($POS)" \
+        --bind="focus:execute-silent($(printf '%q' "$SELF") --apply {2})" \
+        | cut -f2)"
+
+if [ -n "$SEL" ]; then
+  persist "$SEL"
+  apply_all "$SEL"
+  msg applied "$SEL"
+else
+  apply "$ORIG"
+  msg reverted "$ORIG"
+fi
