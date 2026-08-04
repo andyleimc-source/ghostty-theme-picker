@@ -11,21 +11,15 @@ reload, deciding you don't like it, and going again. This makes it a picker:
 
 No reload, no restart, no config editing.
 
-```
-theme >
-↑↓ preview · ←→ page · ^T brightest ^B darkest · type to filter · Enter apply everywhere · Esc revert
-
-   Aa lum 255    Adwaita
-   Aa lum 253    GitHub Light Default
-   Aa lum 212    Rose Pine Dawn
-   Aa lum 204    Belafonte Day
-   Aa lum  75    Seoulbones Dark
-   Aa lum  63    Zenburn
-   Aa lum   0    ENCOM
-```
+![gt walking through Ghostty's themes, the whole terminal recoloring as the cursor moves](demo.gif)
 
 Each row is drawn in that theme's own background and foreground, so the list
-itself is a contrast preview.
+itself is a contrast preview — and the `lum` number is the background's
+brightness, 0–255.
+
+(The recording is made with [vhs](https://github.com/charmbracelet/vhs) from
+[`demo.tape`](demo.tape); it runs with `GT_SCOPE=window` so recording doesn't
+recolor every other window on the machine.)
 
 ## Why the brightness sort
 
@@ -107,6 +101,7 @@ time the picker opens.
 | `GHOSTTY_THEMES_DIR` | override where themes are read from |
 | `GHOSTTY_CONFIG` | override which config file is written |
 | `GT_LANG` | `en` (default) or `zh` for the picker's UI text |
+| `GT_SCOPE` | `all` (default) applies to every Ghostty window; `window` stops at the current one |
 
 Theme directories are probed in order, so a theme of your own in
 `~/.config/ghostty/themes/` shadows a bundled one with the same name.

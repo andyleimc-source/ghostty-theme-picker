@@ -87,6 +87,7 @@ msg() {
       prompt)   echo '主题 > ' ;;
       lum)      echo '亮度' ;;
       applied)  echo "已切到 $2（所有 Ghostty 窗口已刷新，新窗口也用它）" ;;
+      applied1) echo "已切到 $2（只改了当前窗口，已写进配置）" ;;
       reverted) echo "已取消，还原为 ${2:-终端默认配色}" ;;
       nosuch)   echo "没有这个主题：$2" ;;
       similar)  echo '名字接近的：' ;;
@@ -98,6 +99,7 @@ msg() {
       prompt)   echo 'theme > ' ;;
       lum)      echo 'lum' ;;
       applied)  echo "Applied $2 (all Ghostty windows refreshed; new ones will use it too)" ;;
+      applied1) echo "Applied $2 to this window (saved to config)" ;;
       reverted) echo "Cancelled, reverted to ${2:-terminal defaults}" ;;
       nosuch)   echo "No such theme: $2" ;;
       similar)  echo 'Close matches:' ;;
@@ -169,10 +171,13 @@ ghostty_ttys() {
 apply() { { build_osc "$1" > /dev/tty; } 2>/dev/null; }
 
 # Current window plus every other Ghostty window and tab.
+# Set GT_SCOPE=window to keep a change to the current window only — useful when
+# scripting, recording, or trying something out without touching other windows.
 apply_all() {
   local osc t
   osc="$(build_osc "$1")"
   { printf '%s' "$osc" > /dev/tty; } 2>/dev/null
+  [ "${GT_SCOPE:-all}" = window ] && return 0
   for t in $(ghostty_ttys); do
     [ -w "/dev/$t" ] || continue
     { printf '%s' "$osc" > "/dev/$t"; } 2>/dev/null
@@ -272,7 +277,7 @@ SEL="$(printf '%s\n' "$LIST" | fzf --ansi --delimiter="$(printf '\t')" --with-nt
 if [ -n "$SEL" ]; then
   persist "$SEL"
   apply_all "$SEL"
-  msg applied "$SEL"
+  if [ "${GT_SCOPE:-all}" = window ]; then msg applied1 "$SEL"; else msg applied "$SEL"; fi
 else
   apply "$ORIG"
   msg reverted "$ORIG"
