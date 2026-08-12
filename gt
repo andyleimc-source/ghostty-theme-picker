@@ -206,7 +206,10 @@ persist() {
 reload_ghostty() {
   [ "${GT_SCOPE:-all}" = window ] && return 0
   [ "$(uname -s)" = Darwin ] || return 0
-  pgrep -x ghostty >/dev/null 2>&1 || return 0
+  command -v osascript >/dev/null 2>&1 || return 0
+  # No "is Ghostty running?" precheck: `pgrep -x ghostty` does not match, because
+  # macOS reports the process name as the full path inside the .app bundle. If
+  # Ghostty is not running the AppleScript just fails, which is the same no-op.
   osascript -e 'tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu 1 of menu bar item "Ghostty" of menu bar 1' >/dev/null 2>&1
 }
 
