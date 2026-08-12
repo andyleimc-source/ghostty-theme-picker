@@ -76,7 +76,13 @@ Applying to every window uses the same trick, aimed wider: `gt` walks the
 process table, keeps the ttys whose ancestor is the Ghostty process, and writes
 the sequences to each one. A write to another terminal's tty is rendered by that
 terminal, so every Ghostty window and tab repaints at once. The theme is also
-written into your config, so windows opened later match.
+written into your config, and Ghostty is asked to re-read it — otherwise it
+keeps serving the config it loaded at launch and tabs you open later come up in
+the old theme. macOS has no reload IPC, so `gt` clicks Ghostty's
+**Reload Configuration** menu item via AppleScript, which needs Accessibility
+permission for whatever app runs `gt` (System Settings → Privacy & Security →
+Accessibility). Without that permission the config write still lands and the
+theme applies the next time Ghostty starts.
 
 Reading 460+ theme files happens in a single `awk` pass (~30ms). Doing it with a
 couple of `grep`s per file takes closer to three seconds, which you feel every

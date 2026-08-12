@@ -13,8 +13,9 @@
 #      sequences, so you see a theme on your real screen — your prompt, your
 #      scrollback, your code — without reloading anything.
 #   2. Applying hits every window. On Enter the theme is written to the config
-#      (for new windows) AND pushed to every tty owned by Ghostty, so windows
-#      and tabs you already have open change too.
+#      AND pushed to every tty owned by Ghostty, so windows and tabs you already
+#      have open change too. Ghostty is then asked to re-read the config, so
+#      tabs and windows you open afterwards come up in the new theme as well.
 #
 # Themes are listed brightest background first, which is the useful order if you
 # are picking a theme to fight glare on a glossy screen.
@@ -197,6 +198,18 @@ persist() {
   ' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
 }
 
+# Ghostty reads its config once at launch and keeps it in memory, so a tab or
+# window opened after we rewrite the file still comes up in the old theme.
+# There is no reload IPC on macOS, so drive the menu item — it works without
+# focusing or raising Ghostty. Needs Accessibility permission; without it this
+# quietly does nothing and the theme still takes effect on the next launch.
+reload_ghostty() {
+  [ "${GT_SCOPE:-all}" = window ] && return 0
+  [ "$(uname -s)" = Darwin ] || return 0
+  pgrep -x ghostty >/dev/null 2>&1 || return 0
+  osascript -e 'tell application "System Events" to tell process "Ghostty" to click menu item "Reload Configuration" of menu 1 of menu bar item "Ghostty" of menu bar 1' >/dev/null 2>&1
+}
+
 # One awk pass over every theme file: pull out background/foreground, sort by
 # background brightness, and render a swatch in each theme's own colors.
 # (Doing this with a couple of greps per file costs ~3s for 460+ themes.)
@@ -249,7 +262,7 @@ case "${1-}" in
        theme_dirs | while IFS= read -r d; do ls "$d"; done | grep -i -- "$1" | sort -u | head -5 >&2
        exit 1
      fi
-     persist "$*"; apply_all "$*"; echo "→ $*"; exit 0 ;;
+     persist "$*"; apply_all "$*"; reload_ghostty; echo "→ $*"; exit 0 ;;
 esac
 
 command -v fzf >/dev/null || { msg needfzf >&2; exit 1; }
@@ -277,6 +290,7 @@ SEL="$(printf '%s\n' "$LIST" | fzf --ansi --delimiter="$(printf '\t')" --with-nt
 if [ -n "$SEL" ]; then
   persist "$SEL"
   apply_all "$SEL"
+  reload_ghostty
   if [ "${GT_SCOPE:-all}" = window ]; then msg applied1 "$SEL"; else msg applied "$SEL"; fi
 else
   apply "$ORIG"
